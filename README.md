@@ -8,7 +8,7 @@ Développer un modèle de machine learning permettant d’évaluer le risque ind
 
 ## ⚙️ Modèle
 - XGBoost
-- Variables : âge, BMI, statut fumeur
+- Variables : âge, IMC, statut fumeur
 
 ## 📈 Résultats
 - AUC ≈ 0.98
