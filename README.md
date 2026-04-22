@@ -1,4 +1,4 @@
-# Modèle de scoring de risque en assurance prévoyance
+# Outil IA de scoring de risque en assurance prévoyance
 
 ## 🔗 Démo interactive
 👉 https://idriss6539.shinyapps.io/app_souscription/
