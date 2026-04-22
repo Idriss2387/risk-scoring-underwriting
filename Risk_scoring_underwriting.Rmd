@@ -1,0 +1,276 @@
+---
+title: "IA de Souscription en Prévoyance"
+author: "Idriss Denieul"
+date: "2026-04-16"
+output: html_document
+---
+
+```{r}
+library(dplyr)
+
+# Visualisation
+library(ggplot2)
+
+# Machine learning (pipeline moderne)
+library(tidymodels)
+
+# Modèle XGBoost
+library(xgboost)
+
+# Évaluation des modèles
+library(yardstick)
+
+# Sélection de variables (AIC)
+library(MASS)
+
+library(tidymodels)
+
+library(vip)
+```
+
+# 1. Introduction
+
+Ce projet vise à développer un modèle de machine learning permettant d’aider à la prise de décision en souscription dans le domaine de la prévoyance professionnelle.
+
+Contexte :
+
+En assurance prévoyance, l’assureur doit évaluer le risque qu’un assuré subisse un événement coûteux, tel qu’un arrêt de travail long ou une situation d’invalidité. Ces événements étant rares et difficiles à observer directement dans des données publiques, nous utilisons un proxy.
+
+Approche :
+
+À partir d’un dataset de coûts médicaux (insurance.csv), nous construisons une variable cible appelée invalidite_proxy. Cette variable identifie les individus appartenant aux 10% les plus coûteux en dépenses de santé, en utilisant le 90ème percentile des charges comme seuil. Cette approche permet d’assimiler les cas les plus coûteux à des situations de risque élevé (invalidité ou arrêt long).
+
+Méthodologie :
+
+Préparation des données (nettoyage, encodage des variables)
+Construction d’un modèle de classification (XGBoost)
+Prédiction d’un score de risque pour chaque individu
+Mise en place d’un moteur de décision underwriting :
+Acceptation automatique
+Revue manuelle
+Refus ou conditions spécifiques
+
+Finalité :
+
+Ce modèle permet de simuler un système d’aide à la souscription capable d’automatiser une partie des décisions, d’améliorer la cohérence des choix et d’optimiser la gestion du risque en assurance prévoyance.
+
+# 2. Chargement des données
+
+```{r}
+df <- read.csv("C:/Users/Windows/Downloads/insurance.csv")
+head(df)
+
+```
+
+# 3. Création de la variable cible
+
+```{r}
+seuil <- quantile(df$charges, 0.90)  # variables qui correspond au seuil égale à 90% 
+
+df$invalidite_proxy <- ifelse(df$charges >= seuil, "yes", "no")         # création d'une nouvelle variables qui corresond à 1 si > au seuil et 0 sinon
+df$invalidite_proxy <- factor(df$invalidite_proxy, levels = c("no", "yes"))
+head(df)
+```
+
+```{r}
+table(df$invalidite_proxy)
+prop.table(table(df$invalidite_proxy))  
+```
+
+On peut voir que 90% des valeurs de invalidite_proxy sont égales à 0 et 10% sont de 1 ce qui est parfaitement cohérent
+
+# 4. Explorer le lien entre les variables et l’invalidité
+
+Cette étape permet de vérifier que les variables explicatives contiennent de l’information pertinente pour prédire la variable cible. Sans relation entre les variables et la cible, le modèle ne pourra pas apprendre correctement.
+
+```{r}
+df %>%
+  group_by(smoker) %>%
+  summarise(
+    taux_invalidite = mean(invalidite_proxy == "yes")
+  )
+```
+
+On peut voir ici que 48% des fumeurs présente une invaliditée contre 0,028% pour les non fumeurs, donc la variable smoker explique bien l'invaliditée 
+
+```{r}
+boxplot(charges ~ invalidite_proxy, data = df)
+t.test(charges ~ invalidite_proxy, data = df)
+t.test(age ~ invalidite_proxy, data = df)
+t.test(bmi ~ invalidite_proxy, data = df)
+
+```
+Pour la variable age on observe une p-valeur un peu plus élevé mais <5% donc l'age est aussi significatif mais un peu moins que charges et smoker.
+Pour la variable bmi on observe une p-valeur <5% donc bmi est aussi significatif mais un peu moins que charges et smoker.
+
+# 5. Préparer les données
+
+Cette étape consiste à préparer les données avant l’entraînement du modèle. Une recette est définie afin de spécifier la variable cible et les prédicteurs retenus. Les variables numériques sont imputées par leur médiane en cas de valeurs manquantes, les variables qualitatives par leur modalité la plus fréquente, puis les variables catégorielles sont transformées en variables indicatrices afin d’être exploitables par le modèle.
+
+
+```{r}
+
+df$smoker <- factor(df$smoker, levels = c("no", "yes"))
+rec <- recipe(invalidite_proxy ~ age + bmi + smoker, data = df) %>%
+  step_impute_median(all_numeric_predictors()) %>%
+  step_impute_mode(all_nominal_predictors()) %>%
+  step_dummy(all_nominal_predictors())
+```
+
+# 6. Définir et créer le modèle d'IA que l'on va utiliser pour notre projet
+
+Cette étape consiste à définir l’algorithme de prédiction utilisé dans le projet. Un modèle de gradient boosting sur arbres est retenu via le moteur XGBoost, car il est particulièrement adapté aux données tabulaires et permet de capturer des relations non linéaires entre les variables explicatives et le risque d’invalidité. Le problème étant binaire, le modèle est spécifié en mode classification.
+On dit à R que l'on veut utiliser XGBoost pour prédire si un individu est en invalidité ou pas.
+
+
+```{r}
+model <- boost_tree(
+  trees = 300,
+  learn_rate = 0.05,
+  tree_depth = 6
+) %>%
+  set_engine("xgboost") %>%
+  set_mode("classification")
+
+wf <- workflow() %>%
+  add_recipe(rec) %>%
+  add_model(model)
+```
+
+```{r}
+library(tidymodels)
+
+set.seed(123)
+
+split <- initial_split(df, prop = 0.8, strata = invalidite_proxy)
+
+train_data <- training(split)  # échantillon de données sur lequel on va entrainer le modèle 
+test_data  <- testing(split)   # échantillon de données sur lequel on va tester le modèle 
+```
+
+# 7. Entrainement de notre modèle dIA 
+
+Dans cette étape nous allons entrainer notre modèle sur les données d'entrainement, ce qui lui permet d’apprendre les relations entre les variables explicatives et la variable cible.
+Puis nous allons le tester sur les donées de test et enfain voir si il fonctionne bien ou pas
+
+```{r}
+fit_model <- fit(wf, data = train_data)
+```
+
+
+
+```{r}
+library(tidymodels)
+library(xgboost)
+
+# 1. Sauvegarder la recette préparée (IMPORTANT)
+rec_prep <- fit_model %>%
+  extract_recipe(estimated = TRUE)
+
+saveRDS(rec_prep, "C:/Users/Windows/Desktop/App souscription/recette_souscription.rds")
+
+
+# 2. Sauvegarder le modèle XGBoost correctement
+xgb_fit <- fit_model %>%
+  extract_fit_engine()
+
+xgboost::xgb.save(xgb_fit, "C:/Users/Windows/Desktop/App souscription/modele_xgb.json")
+```
+
+```{r}
+pred <- predict(fit_model, test_data, type = "prob") %>%
+  bind_cols(test_data)
+```
+
+
+# 8. Evaluation de notre modèle d'IA 
+```{r}
+roc_auc(pred, truth = invalidite_proxy, .pred_yes, event_level = "second")
+```
+
+```{r}
+pred_class <- predict(fit_model, test_data, type = "class") %>%
+  bind_cols(pred)
+
+conf_mat(pred_class, truth = invalidite_proxy, estimate = .pred_class)
+```
+```{r}
+vip(fit_model)
+```
+
+Je peux conclure que mon modèle est plutot performant mais très dépendant à smoker donc quasi impératif que mon jeu de données ai smoker pour qu'il fonctionne correctemment,
+et je n'ai pas beaucoup de variables non plus, donc pas hyper polyvalent sur des donées plus complexe.
+
+
+
+
+
+# 9. Application du modèle pour notre outil de souscription
+
+Avec le score de rique défini par le modèle d'IA je vais établir un outil de souscription pour des contrats de prévoyance professionelle.
+Les contrats acceptés vont etre ceux qui obtiennent un score < 0,2 et les contrats rejetés ont un score de risque > 0,8
+
+
+```{r}
+decision_underwriting <- function(score) {
+  case_when(
+    score < 0.20 ~ "ACCEPT_AUTO",
+    score < 0.50 ~ "MANUAL_REVIEW",
+    TRUE ~ "DECLINE_OR_RESTRICT"
+  )
+}
+
+pred <- pred %>%
+  mutate(decision = decision_underwriting(.pred_yes))
+```
+
+```{r}
+table(pred$decision)
+```
+```{r}
+pred %>%
+  group_by(decision) %>%
+  summarise(
+    taux_invalidite = mean(invalidite_proxy == "yes"),
+    n = n()
+  )
+```
+Ici on peut voir que le taux de risque pour les contrats acceptés sont très faibles : 0,12 % et ceux qui sont refusés ou avec conditions ont un risque de 95% 
+Donc le modèle est bien calibrés 
+
+
+
+
+
+```{r}
+install.packages("bundle")
+library(bundle)
+
+bundled_model <- bundle::bundle(fit_model)
+
+saveRDS(
+  bundled_model,
+  "C:/Users/Windows/Desktop/App souscription/modele_bundle.rds"
+)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
